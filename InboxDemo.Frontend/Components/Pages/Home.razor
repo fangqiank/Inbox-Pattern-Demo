@@ -1,0 +1,61 @@
+@page "/"
+
+<PageTitle>Home</PageTitle>
+
+<h1>Transactional Inbox Pattern</h1>
+<p class="text-muted" style="font-size: 0.9rem;">Exactly-once message processing for distributed systems</p>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.25rem; margin-top: 1.5rem;">
+
+    <div style="background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-md); padding: 1.25rem;">
+        <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem;">
+            <span style="font-size: 1.5rem;">&#9654;</span>
+            <h3 style="margin: 0; font-size: 1rem;">1. Publish</h3>
+        </div>
+        <p style="color: var(--text-secondary); font-size: 0.88rem; margin: 0;">
+            <a href="create-order">Create an order</a> to publish an
+            <code>OrderCreated</code> event via RabbitMQ using MassTransit outbox.
+        </p>
+    </div>
+
+    <div style="background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-md); padding: 1.25rem;">
+        <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem;">
+            <span style="font-size: 1.5rem;">&#9660;</span>
+            <h3 style="margin: 0; font-size: 1rem;">2. Ingest</h3>
+        </div>
+        <p style="color: var(--text-secondary); font-size: 0.88rem; margin: 0;">
+            <code>InboxConsumer</code> receives the message and persists it to
+            <code>inbox_messages</code> table. Idempotent via <code>ON CONFLICT DO NOTHING</code>.
+        </p>
+    </div>
+
+    <div style="background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-md); padding: 1.25rem;">
+        <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem;">
+            <span style="font-size: 1.5rem;">&#9889;</span>
+            <h3 style="margin: 0; font-size: 1rem;">3. Process</h3>
+        </div>
+        <p style="color: var(--text-secondary); font-size: 0.88rem; margin: 0;">
+            <code>InboxBackgroundProcessor</code> polls every 2s and dispatches to
+            <code>IMessageHandler</code>. <a href="inbox-messages">Monitor messages</a> in real time.
+        </p>
+    </div>
+
+</div>
+
+<div style="margin-top: 2rem; background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-md); padding: 1.25rem;">
+    <h4 style="font-size: 0.85rem; margin-bottom: 0.75rem; color: var(--text-secondary);">Guarantees</h4>
+    <div style="display: flex; flex-wrap: wrap; gap: 1.5rem;">
+        <div>
+            <span class="badge bg-success">Idempotent</span>
+            <span style="color: var(--text-secondary); font-size: 0.85rem; margin-left: 0.5rem;">Duplicate messages silently ignored</span>
+        </div>
+        <div>
+            <span class="badge bg-info">Retry</span>
+            <span style="color: var(--text-secondary); font-size: 0.85rem; margin-left: 0.5rem;">Max 3 attempts for failed messages</span>
+        </div>
+        <div>
+            <span class="badge bg-primary">Lock</span>
+            <span style="color: var(--text-secondary); font-size: 0.85rem; margin-left: 0.5rem;">FOR UPDATE SKIP LOCKED for concurrency</span>
+        </div>
+    </div>
+</div>

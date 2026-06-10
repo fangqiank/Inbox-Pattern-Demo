@@ -1,0 +1,137 @@
+@page "/inbox-messages"
+@rendermode InteractiveServer
+@inject IHttpClientFactory HttpClientFactory
+@implements IDisposable
+
+<PageTitle>Inbox Messages</PageTitle>
+
+<h1>Inbox Messages</h1>
+
+<p>Messages persisted in the <code>inbox_messages</code> table. Auto-refreshes every 3 seconds.</p>
+
+<div class="mb-3">
+    <button class="btn btn-outline-primary" @onclick="RefreshAsync" disabled="@_loading">
+        @if (_loading)
+        {
+            <span class="spinner-border spinner-border-sm me-1"></span>
+        }
+        Refresh
+    </button>
+    <span class="ms-2 text-muted">Auto-refresh: <strong>@(_autoRefresh ? "On" : "Off")</strong></span>
+    <button class="btn btn-sm btn-link" @onclick="ToggleAutoRefresh">
+        @(_autoRefresh ? "Disable" : "Enable")
+    </button>
+</div>
+
+@if (_error is not null)
+{
+    <div class="alert alert-danger">@_error</div>
+}
+
+@if (_messages.Any())
+{
+    <table class="table table-sm table-hover">
+        <thead>
+            <tr>
+                <th>Message ID</th>
+                <th>Type</th>
+                <th>Received</th>
+                <th>Status</th>
+                <th>Retries</th>
+                <th>Error</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var msg in _messages)
+            {
+                var (statusText, statusClass) = GetStatus(msg);
+                <tr>
+                    <td><code>@msg.Id.ToString()[..8]...</code></td>
+                    <td><small>@msg.MessageType[(msg.MessageType.LastIndexOf('.') + 1)..]</small></td>
+                    <td>@msg.ReceivedOnUtc.ToLocalTime().ToString("HH:mm:ss")</td>
+                    <td><span class="badge @statusClass">@statusText</span></td>
+                    <td>@msg.RetryCount</td>
+                    <td>
+                        @if (msg.Error is not null)
+                        {
+                            <small class="text-danger" title="@msg.Error">@msg.Error[..Math.Min(msg.Error.Length, 40)]...</small>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+else if (!_loading)
+{
+    <p class="text-muted">No messages found.</p>
+}
+
+@code {
+    private record InboxMessageDto(
+        Guid Id, string MessageType, string Payload,
+        DateTime ReceivedOnUtc, DateTime? ProcessedOnUtc,
+        string? Error, int RetryCount);
+
+    private List<InboxMessageDto> _messages = [];
+    private bool _loading;
+    private string? _error;
+    private bool _autoRefresh = true;
+    private readonly CancellationTokenSource _cts = new();
+    private PeriodicTimer? _timer;
+    private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+        _ = RunAutoRefreshLoop();
+    }
+
+    private async Task RunAutoRefreshLoop()
+    {
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+        while (await _timer.WaitForNextTickAsync(_cts.Token))
+        {
+            if (_autoRefresh)
+                await RefreshAsync();
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        _loading = true;
+        _error = null;
+
+        try
+        {
+            var client = HttpClientFactory.CreateClient("Api");
+            var messages = await client.GetFromJsonAsync<List<InboxMessageDto>>("/api/inbox-messages", _jsonOptions, _cts.Token);
+            _messages = messages ?? [];
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load messages: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void ToggleAutoRefresh() => _autoRefresh = !_autoRefresh;
+
+    private static (string Text, string Class) GetStatus(InboxMessageDto msg) => msg switch
+    {
+        { ProcessedOnUtc: not null } => ("Processed", "bg-success"),
+        { Error: not null, RetryCount: >= 3 } => ("Dead", "bg-danger"),
+        { Error: not null } => ("Retrying", "bg-warning text-dark"),
+        _ => ("Pending", "bg-info text-dark")
+    };
+
+    public void Dispose()
+    {
+        _cts.Cancel();
+        _timer?.Dispose();
+        _cts.Dispose();
+    }
+}

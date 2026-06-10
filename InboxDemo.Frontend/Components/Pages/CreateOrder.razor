@@ -1,0 +1,106 @@
+@page "/create-order"
+@rendermode InteractiveServer
+@inject IHttpClientFactory HttpClientFactory
+@implements IDisposable
+
+<PageTitle>Create Order</PageTitle>
+
+<h1>Create Order</h1>
+
+<p>Publish an <code>OrderCreated</code> event to RabbitMQ via the API.</p>
+
+<EditForm Model="_model" OnValidSubmit="SubmitAsync">
+    <DataAnnotationsValidator />
+
+    <div class="mb-3">
+        <label class="form-label" for="customerName">Customer Name</label>
+        <InputText id="customerName" class="form-control" @bind-Value="_model.CustomerName"
+                   placeholder="Enter customer name" />
+        <ValidationMessage For="() => _model.CustomerName" />
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label" for="amount">Amount</label>
+        <InputNumber id="amount" class="form-control" @bind-Value="_model.Amount"
+                     placeholder="0.00" step="0.01" />
+        <ValidationMessage For="() => _model.Amount" />
+    </div>
+
+    <button type="submit" class="btn btn-primary" disabled="@_submitting">
+        @if (_submitting)
+        {
+            <span class="spinner-border spinner-border-sm me-1"></span>
+            <span>Submitting...</span>
+        }
+        else
+        {
+            <span>Submit Order</span>
+        }
+    </button>
+</EditForm>
+
+@if (_result is not null)
+{
+    <div class="alert alert-success mt-3">
+        <h5 class="alert-heading">Order Created!</h5>
+        <p class="mb-0">
+            <strong>Order ID:</strong> <code>@_result.Value.GetProperty("orderId").GetGuid()</code><br />
+            <strong>Message:</strong> @_result.Value.GetProperty("message").GetString()
+        </p>
+    </div>
+}
+
+@if (_error is not null)
+{
+    <div class="alert alert-danger mt-3">@_error</div>
+}
+
+@code {
+    private record OrderFormModel
+    {
+        [System.ComponentModel.DataAnnotations.Required] public string CustomerName { get; set; } = "";
+        [System.ComponentModel.DataAnnotations.Required] public decimal Amount { get; set; }
+    }
+
+    private OrderFormModel _model = new();
+    private bool _submitting;
+    private JsonElement? _result;
+    private string? _error;
+    private readonly CancellationTokenSource _cts = new();
+
+    private async Task SubmitAsync()
+    {
+        _submitting = true;
+        _error = null;
+        _result = null;
+
+        try
+        {
+            var client = HttpClientFactory.CreateClient("Api");
+            var response = await client.PostAsJsonAsync("/api/orders", new
+            {
+                _model.CustomerName,
+                _model.Amount
+            }, _cts.Token);
+
+            if (response.IsSuccessStatusCode)
+            {
+                _result = await response.Content.ReadFromJsonAsync<JsonElement>(_cts.Token);
+            }
+            else
+            {
+                _error = $"API returned {(int)response.StatusCode}: {response.ReasonPhrase}";
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Request failed: {ex.Message}";
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    public void Dispose() => _cts.Cancel();
+}

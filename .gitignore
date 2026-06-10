@@ -1,0 +1,33 @@
+## Build outputs
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+
+## Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## IDE
+.idea/
+.vscode/
+*.swp
+
+## NuGet
+*.nupkg
+**/[Pp]ackages/*
+
+## OS
+Thumbs.db
+.DS_Store
+
+## Docker volumes (local data)
+postgres_data/
+rabbitmq_data/
+
+## Claude Code
+CLAUDE.md
+.claude/

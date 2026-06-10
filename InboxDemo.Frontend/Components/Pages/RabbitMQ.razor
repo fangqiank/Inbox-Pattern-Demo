@@ -1,0 +1,233 @@
+@page "/rabbitmq"
+@rendermode InteractiveServer
+@implements IDisposable
+
+<PageTitle>RabbitMQ</PageTitle>
+
+<h1>RabbitMQ Queues</h1>
+
+<p>Live queue status from RabbitMQ Management API. Auto-refreshes every 3 seconds.</p>
+
+<div class="mb-3">
+    <button class="btn btn-outline-primary" @onclick="RefreshAsync" disabled="@_loading">
+        @if (_loading)
+        {
+            <span class="spinner-border spinner-border-sm me-1"></span>
+        }
+        Refresh
+    </button>
+    <span class="ms-2 text-muted">Auto-refresh: <strong>@(_autoRefresh ? "On" : "Off")</strong></span>
+    <button class="btn btn-sm btn-link" @onclick="ToggleAutoRefresh">
+        @(_autoRefresh ? "Disable" : "Enable")
+    </button>
+</div>
+
+@if (_error is not null)
+{
+    <div class="alert alert-danger">@_error</div>
+}
+
+@if (_queues.Any())
+{
+    <table class="table table-sm table-hover">
+        <thead>
+            <tr>
+                <th>Queue</th>
+                <th>Messages</th>
+                <th>Ready</th>
+                <th>Unacked</th>
+                <th>Consumers</th>
+                <th>Rate (msg/s)</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var q in _queues)
+            {
+                <tr>
+                    <td>
+                        <code>@q.Name</code>
+                        @if (q.Name == "order-created-inbox")
+                        {
+                            <span class="badge bg-primary ms-1">inbox</span>
+                        }
+                    </td>
+                    <td><strong>@q.Messages</strong></td>
+                    <td>@q.MessagesReady</td>
+                    <td>@q.MessagesUnacknowledged</td>
+                    <td>@q.Consumers</td>
+                    <td>@q.MessageStats?.PublishDetails?.Rate.ToString("F1")</td>
+                </tr>
+                @if (q.Messages > 0 && q.Name == "order-created-inbox")
+                {
+                    <tr>
+                        <td colspan="6" class="ps-4">
+                            <button class="btn btn-sm btn-outline-secondary" @onclick="() => LoadMessagesAsync(q.Name)">
+                                Show @q.Messages message(s)
+                            </button>
+                        </td>
+                    </tr>
+                }
+            }
+        </tbody>
+    </table>
+
+    @if (_queueMessages.Any())
+    {
+        <h4 class="mt-4">Messages in <code>@_selectedQueue</code></h4>
+        <div class="accordion" id="msgAccordion">
+            @foreach (var msg in _queueMessages.Select((m, i) => (m, i)))
+            {
+                <div class="accordion-item">
+                    <h2 class="accordion-header">
+                        <button class="accordion-button collapsed" type="button"
+                                data-bs-toggle="collapse"
+                                data-bs-target="#msg-@msg.i">
+                            Message @msg.i &mdash; <code class="ms-2">@msg.m.Payload[..Math.Min(msg.m.Payload.Length, 80)]</code>
+                        </button>
+                    </h2>
+                    <div id="msg-@msg.i" class="accordion-collapse collapse"
+                         data-bs-parent="#msgAccordion">
+                        <div class="accordion-body">
+                            <p><strong>Exchange:</strong> <code>@msg.m.Exchange</code></p>
+                            <p><strong>Routing Key:</strong> <code>@msg.m.RoutingKey</code></p>
+                            <p><strong>Properties:</strong></p>
+                            <pre class="bg-light p-2 rounded"><code>@msg.m.Properties</code></pre>
+                            <p><strong>Payload:</strong></p>
+                            <pre class="bg-light p-2 rounded"><code>@FormatPayload(msg.m.Payload)</code></pre>
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+}
+else if (!_loading)
+{
+    <p class="text-muted">No queues found.</p>
+}
+
+@code {
+    private record QueueInfo(
+        string Name, string Vhost, int Messages, int MessagesReady,
+        int MessagesUnacknowledged, int Consumers, MessageStats? MessageStats);
+
+    private record MessageStats(PublishDetails PublishDetails);
+    private record PublishDetails(double Rate);
+
+    private record QueueMessage(string Payload, string Exchange, string RoutingKey, string Properties);
+
+    private List<QueueInfo> _queues = [];
+    private List<QueueMessage> _queueMessages = [];
+    private string? _selectedQueue;
+    private bool _loading;
+    private string? _error;
+    private bool _autoRefresh = true;
+    private readonly CancellationTokenSource _cts = new();
+    private PeriodicTimer? _timer;
+    private readonly JsonSerializerOptions _jsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+        _ = RunAutoRefreshLoop();
+    }
+
+    private async Task RunAutoRefreshLoop()
+    {
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+        while (await _timer.WaitForNextTickAsync(_cts.Token))
+        {
+            if (_autoRefresh)
+                await RefreshAsync();
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        _loading = true;
+        _error = null;
+
+        try
+        {
+            using var handler = new HttpClientHandler { Credentials = new System.Net.NetworkCredential("guest", "guest") };
+            using var client = new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:15673") };
+
+            var json = await client.GetStringAsync("/api/queues/%2F", _cts.Token);
+            var raw = JsonSerializer.Deserialize<List<JsonElement>>(json, _jsonOptions);
+
+            _queues = raw?.Select(q => new QueueInfo(
+                q.GetProperty("name").GetString() ?? "",
+                q.GetProperty("vhost").GetString() ?? "",
+                q.GetProperty("messages").GetInt32(),
+                q.GetProperty("messages_ready").GetInt32(),
+                q.GetProperty("messages_unacknowledged").GetInt32(),
+                q.GetProperty("consumers").GetInt32(),
+                q.TryGetProperty("message_stats", out var stats)
+                    ? new MessageStats(new PublishDetails(
+                        stats.TryGetProperty("publish_details", out var pd)
+                            ? pd.GetProperty("rate").GetDouble() : 0))
+                    : null
+            )).ToList() ?? [];
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load queues: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task LoadMessagesAsync(string queue)
+    {
+        _error = null;
+        _selectedQueue = queue;
+
+        try
+        {
+            using var handler = new HttpClientHandler { Credentials = new System.Net.NetworkCredential("guest", "guest") };
+            using var client = new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:15673") };
+
+            var body = JsonSerializer.Serialize(new { count = 10, requeue = true, encoding = "auto", truncate = 50000 });
+            var content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
+            var response = await client.PostAsync($"/api/queues/%2F/{Uri.EscapeDataString(queue)}/get", content, _cts.Token);
+
+            var json = await response.Content.ReadAsStringAsync(_cts.Token);
+            var items = JsonSerializer.Deserialize<List<JsonElement>>(json, _jsonOptions);
+
+            _queueMessages = items?.Select(m => new QueueMessage(
+                m.TryGetProperty("payload", out var p) ? p.GetString() ?? "" : "",
+                m.TryGetProperty("exchange", out var e) ? e.GetString() ?? "" : "",
+                m.TryGetProperty("routing_key", out var r) ? r.GetString() ?? "" : "",
+                m.TryGetProperty("properties", out var props) ? props.GetRawText() : ""
+            )).ToList() ?? [];
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load messages: {ex.Message}";
+        }
+    }
+
+    private void ToggleAutoRefresh() => _autoRefresh = !_autoRefresh;
+
+    private static string FormatPayload(string payload)
+    {
+        try
+        {
+            var doc = JsonDocument.Parse(payload);
+            return JsonSerializer.Serialize(doc, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch
+        {
+            return payload;
+        }
+    }
+
+    public void Dispose()
+    {
+        _cts.Cancel();
+        _timer?.Dispose();
+        _cts.Dispose();
+    }
+}

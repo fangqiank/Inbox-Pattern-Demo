@@ -3,6 +3,8 @@ using InboxDemo.Common.Models;
 using MassTransit;
 using Npgsql;
 using Scalar.AspNetCore;
+using System.ComponentModel.DataAnnotations;
+using ValidationResult = System.ComponentModel.DataAnnotations.ValidationResult;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -47,12 +49,21 @@ app.UseCors();
 app.UseHttpsRedirection();
 
 var connectionString = builder.Configuration.GetConnectionString("PostgreSQL")
-    ?? "Host=127.0.0.1;Port=5433;Database=inbox_demo;Username=postgres;Password=postgres";
+    ?? throw new InvalidOperationException("ConnectionStrings:PostgreSQL is not configured.");
 
 app.MapPost("/api/orders", async (
     CreateOrderRequest request,
     IPublishEndpoint publishEndpoint) =>
 {
+    // 手动验证（Minimal API 不自动验证 record 参数）
+    var validationResults = new List<System.ComponentModel.DataAnnotations.ValidationResult>();
+    var context = new ValidationContext(request);
+    if (!Validator.TryValidateObject(request, context, validationResults, true))
+    {
+        var errors = validationResults.Select(v => v.ErrorMessage).ToArray();
+        return Results.BadRequest(new { Errors = errors });
+    }
+
     var orderCreated = new OrderCreated
     {
         OrderId = Guid.NewGuid(),
@@ -67,8 +78,12 @@ app.MapPost("/api/orders", async (
 })
 .WithName("CreateOrder");
 
-app.MapGet("/api/inbox-messages", async () =>
+app.MapGet("/api/inbox-messages", async (int? page, int? pageSize) =>
 {
+    var p = Math.Max(page ?? 1, 1);
+    var ps = Math.Clamp(pageSize ?? 100, 1, 500);
+    var offset = (p - 1) * ps;
+
     using var connection = new NpgsqlConnection(connectionString);
 
     var sql = @"
@@ -81,14 +96,23 @@ app.MapGet("/api/inbox-messages", async () =>
                retry_count AS RetryCount
         FROM inbox_messages
         ORDER BY received_on_utc DESC
-        LIMIT 100
+        LIMIT @PageSize OFFSET @Offset
     ";
 
-    var messages = await connection.QueryAsync<InboxMessage>(sql);
+    var messages = await connection.QueryAsync<InboxMessage>(sql, new { PageSize = ps, Offset = offset });
     return Results.Ok(messages);
 })
 .WithName("GetInboxMessages");
 
 app.Run();
 
-public record CreateOrderRequest(string CustomerName, decimal Amount);
+public record CreateOrderRequest
+{
+    [Required(ErrorMessage = "Customer name is required")]
+    [StringLength(200, MinimumLength = 1, ErrorMessage = "Customer name must be 1-200 characters")]
+    public string CustomerName { get; init; } = "";
+
+    [Required(ErrorMessage = "Amount is required")]
+    [Range(0.01, 1_000_000, ErrorMessage = "Amount must be between 0.01 and 1,000,000")]
+    public decimal Amount { get; init; }
+}

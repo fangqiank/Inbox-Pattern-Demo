@@ -4,6 +4,6 @@
   </Folder>
   <Project Path="InboxDemo.Api/InboxDemo.Api.csproj" Id="624a161a-d7bd-45a5-b687-5fe6a6cc8033" />
   <Project Path="InboxDemo.Common/InboxDemo.Common.csproj" Id="7562b9ce-f037-495b-9d22-b86c7a587581" />
+  <Project Path="InboxDemo.Frontend/InboxDemo.Frontend.csproj" Id="337f2bab-383e-42ad-9539-1c6e1ed9c0d7" />
   <Project Path="InboxDemo.Processor/InboxDemo.Processor.csproj" Id="41032357-8b03-4b0f-aec1-5f6c06ab0ee2" />
-  <Project Path="InboxDemo.Frontend/InboxDemo.Frontend.csproj" Id="a1b2c3d4-e5f6-7890-abcd-ef1234567890" />
 </Solution>

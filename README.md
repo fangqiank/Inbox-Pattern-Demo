@@ -21,10 +21,10 @@ A .NET 10 demo of the **Transactional Inbox Pattern** — ensuring exactly-once 
 
 | Project | Type | Responsibility |
 |---------|------|---------------|
-| **InboxDemo.Api** | Minimal API | `POST /api/orders` publishes `OrderCreated` events; `GET /api/inbox-messages` queries inbox status |
-| **InboxDemo.Processor** | Worker Service | `InboxConsumer` persists to `inbox_messages`; `InboxBackgroundProcessor` polls and dispatches to handlers |
+| **InboxDemo.Api** | Minimal API | `POST /api/orders` publishes `OrderCreated` events; `GET /api/inbox-messages` queries inbox status with pagination |
+| **InboxDemo.Processor** | Worker Service | `InboxConsumer` persists to `inbox_messages`; `InboxBackgroundProcessor` polls in DB transaction and dispatches to handlers |
 | **InboxDemo.Common** | Class Library | Shared models: `OrderCreated`, `InboxMessage` |
-| **InboxDemo.Frontend** | Blazor Server | Order creation form, inbox messages monitor, RabbitMQ queue viewer |
+| **InboxDemo.Frontend** | Blazor Server | Order creation form, inbox messages monitor, RabbitMQ overview (exchanges + queues) |
 
 ## Data Flow / 数据流
 
@@ -35,7 +35,7 @@ Frontend ─POST /api/orders─> Api ─publish─> RabbitMQ ─consume─> Inbo
                                               │                  inbox_messages
                                               │                       │
                                               └─ poll (2s) ──────────┘
-                                                  │
+                                                  │ (within DB transaction)
                                                   ▼
                                           IMessageHandler
                                         (OrderCreatedHandler)
@@ -43,8 +43,10 @@ Frontend ─POST /api/orders─> Api ─publish─> RabbitMQ ─consume─> Inbo
 
 **Key guarantees:**
 - **Idempotent**: `ON CONFLICT (id) DO NOTHING` — duplicate messages silently ignored
+- **Transactional**: poll + process + mark in one DB transaction — row locks held until commit
 - **Concurrency-safe**: `FOR UPDATE SKIP LOCKED` — multiple processor instances safe
-- **Retry**: max 3 attempts; failed messages tracked with error text
+- **Retry with backoff**: max 3 attempts; `5s * retry_count` exponential backoff; Dead Letter after 3 failures
+- **Input validation**: `[Required]`, `[StringLength]`, `[Range]` on API endpoints
 - **Routing**: `MessageHandlerFactory` maps message types to handlers
 
 ## PostgreSQL ↔ InboxDemo.Processor 交互流程
@@ -83,16 +85,17 @@ RETURNING id;
 - 返回 `id` → 新消息
 - 返回 `NULL` → 重复消息被忽略
 
-#### 3. 轮询拉取 `GetUnprocessedMessagesAsync`（每 2 秒）
+#### 3. 轮询拉取 `GetUnprocessedMessagesAsync`（每 2 秒，在事务内）
 
 ```sql
 SELECT id, message_type, payload::text, received_on_utc, processed_on_utc, error, retry_count
 FROM inbox_messages
 WHERE processed_on_utc IS NULL            -- 未处理
   AND (error IS NULL OR retry_count < 3)  -- 或可重试
+  AND (error IS NULL OR received_on_utc < NOW() - (INTERVAL '5 seconds' * LEAST(retry_count, 5)))  -- 退避
 ORDER BY received_on_utc
 LIMIT 10                                  -- 每批最多 10 条
-FOR UPDATE SKIP LOCKED;                   -- 行级锁 + 跳过已锁行
+FOR UPDATE SKIP LOCKED;                   -- 行级锁 + 跳过已锁行（持续到事务提交）
 ```
 
 `FOR UPDATE SKIP LOCKED` 的含义:
@@ -100,7 +103,7 @@ FOR UPDATE SKIP LOCKED;                   -- 行级锁 + 跳过已锁行
 - `SKIP LOCKED` — 已被其他事务锁定的行直接跳过，不等待
 - **效果**: 多个 Processor 实例可安全并行处理不同消息
 
-#### 4. 更新状态（处理完成后）
+#### 4. 更新状态（处理完成后，在同一事务内）
 
 **成功:**
 ```sql
@@ -127,7 +130,7 @@ WHERE id = @Id;
      │   Pending    │   processed_on_utc=NULL, error=NULL
      │   (待处理)   │
      └──────┬──────┘
-            │ BackgroundProcessor poll (every 2s)
+            │ BackgroundProcessor poll (every 2s, in transaction)
             ▼
      ┌─────────────┐    成功     ┌─────────────┐
      │  Processing  │───────────▶│  Processed   │
@@ -136,7 +139,7 @@ WHERE id = @Id;
             │ 失败
             ▼
      ┌─────────────┐  retry<3   ┌─────────────┐
-     │   Failed     │───────────▶│   Retrying   │──▶ 回到 Pending 队列
+     │   Failed     │───────────▶│   Retrying   │──▶ 等待 5s*retry_count 后回到 Pending
      │   (失败)     │            │   (重试中)   │
      └──────┬──────┘            └─────────────┘
             │ retry >= 3
@@ -178,7 +181,11 @@ Create an order and publish `OrderCreated` event.
 }
 ```
 
-**Response:**
+**Validation:**
+- `customerName`: required, 1-200 characters
+- `amount`: required, 0.01 - 1,000,000
+
+**Response (200):**
 ```json
 {
   "orderId": "f12e2ac7-cf3a-474b-9cd4-5d83b4529997",
@@ -186,9 +193,22 @@ Create an order and publish `OrderCreated` event.
 }
 ```
 
+**Response (400):**
+```json
+{
+  "errors": ["Customer name must be 1-200 characters"]
+}
+```
+
 ### GET /api/inbox-messages
 
-Query inbox message status (last 100, ordered by received time desc).
+Query inbox message status with pagination.
+
+**Query Parameters:**
+- `page` (optional, default: 1)
+- `pageSize` (optional, default: 100, max: 500)
+
+**Example:** `GET /api/inbox-messages?page=1&pageSize=20`
 
 **Response:**
 ```json
@@ -212,4 +232,4 @@ Query inbox message status (last 100, ordered by received time desc).
 | `/` | Architecture overview and pattern explanation |
 | `/create-order` | Form to create orders and publish events |
 | `/inbox-messages` | Real-time inbox message status (auto-refresh 3s) |
-| `/rabbitmq` | RabbitMQ queue viewer with message inspection |
+| `/rabbitmq` | RabbitMQ overview: exchanges, queues, message stats (auto-refresh 3s) |

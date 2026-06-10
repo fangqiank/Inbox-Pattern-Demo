@@ -5,8 +5,12 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
-var apiBaseUrl = builder.Configuration["ApiBaseUrl"] ?? "https://localhost:7001";
-builder.Services.AddHttpClient("Api", client => client.BaseAddress = new Uri(apiBaseUrl));
+var apiBaseUrl = builder.Configuration["ApiBaseUrl"] ?? "http://localhost:5264/";
+builder.Services.AddHttpClient("Api", client =>
+{
+    var baseUri = apiBaseUrl.EndsWith('/') ? apiBaseUrl : apiBaseUrl + '/';
+    client.BaseAddress = new Uri(baseUri);
+});
 
 var app = builder.Build();
 

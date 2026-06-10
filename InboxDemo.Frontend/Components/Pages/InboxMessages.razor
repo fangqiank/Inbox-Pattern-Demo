@@ -1,7 +1,7 @@
 @page "/inbox-messages"
 @rendermode InteractiveServer
 @inject IHttpClientFactory HttpClientFactory
-@implements IDisposable
+@implements IAsyncDisposable
 
 <PageTitle>Inbox Messages</PageTitle>
 
@@ -84,17 +84,25 @@ else if (!_loading)
     protected override async Task OnInitializedAsync()
     {
         await RefreshAsync();
-        _ = RunAutoRefreshLoop();
+        _ = RunAutoRefreshLoop().ContinueWith(t =>
+        {
+            if (t.Exception is not null)
+                Console.Error.WriteLine(t.Exception.Flatten().Message);
+        }, TaskContinuationOptions.OnlyOnFaulted);
     }
 
     private async Task RunAutoRefreshLoop()
     {
         _timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
-        while (await _timer.WaitForNextTickAsync(_cts.Token))
+        try
         {
-            if (_autoRefresh)
-                await RefreshAsync();
+            while (await _timer.WaitForNextTickAsync(_cts.Token))
+            {
+                if (_autoRefresh)
+                    await RefreshAsync();
+            }
         }
+        catch (OperationCanceledException) { }
     }
 
     private async Task RefreshAsync()
@@ -105,7 +113,7 @@ else if (!_loading)
         try
         {
             var client = HttpClientFactory.CreateClient("Api");
-            var messages = await client.GetFromJsonAsync<List<InboxMessageDto>>("/api/inbox-messages", _jsonOptions, _cts.Token);
+            var messages = await client.GetFromJsonAsync<List<InboxMessageDto>>("api/inbox-messages", _jsonOptions, _cts.Token);
             _messages = messages ?? [];
         }
         catch (Exception ex)
@@ -128,9 +136,9 @@ else if (!_loading)
         _ => ("Pending", "bg-info text-dark")
     };
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        _cts.Cancel();
+        await _cts.CancelAsync();
         _timer?.Dispose();
         _cts.Dispose();
     }

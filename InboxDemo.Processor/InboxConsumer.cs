@@ -39,8 +39,11 @@ namespace InboxDemo.Processor
         }
     }
 
+    /// <summary>
+    /// 泛型 Inbox Consumer：支持任意消息类型，新消息类型无需创建专用 Consumer
+    /// </summary>
     public class GenericInboxConsumer<T>(
-        InboxDatabase inboxDatabase, 
+        InboxDatabase inboxDatabase,
         ILogger<GenericInboxConsumer<T>> logger
         ) : IConsumer<T> where T : class
     {
@@ -58,8 +61,13 @@ namespace InboxDemo.Processor
                 RetryCount = 0
             };
 
+            var isNewMessage = await inboxDatabase.InsertMessageAsync(inboxMessage);
 
-            await inboxDatabase.InsertMessageAsync(inboxMessage);
+            if (isNewMessage)
+                logger.LogInformation("New message saved to inbox: {MessageId} ({MessageType})",
+                    messageId, typeof(T).Name);
+            else
+                logger.LogWarning("Duplicate message ignored: {MessageId}", messageId);
         }
     }
 }

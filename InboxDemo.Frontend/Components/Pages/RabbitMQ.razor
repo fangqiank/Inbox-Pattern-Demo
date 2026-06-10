@@ -1,12 +1,12 @@
 @page "/rabbitmq"
 @rendermode InteractiveServer
-@implements IDisposable
+@implements IAsyncDisposable
 
 <PageTitle>RabbitMQ</PageTitle>
 
-<h1>RabbitMQ Queues</h1>
+<h1>RabbitMQ Overview</h1>
 
-<p>Live queue status from RabbitMQ Management API. Auto-refreshes every 3 seconds.</p>
+<p>Live status from RabbitMQ Management API. Auto-refreshes every 3 seconds.</p>
 
 <div class="mb-3">
     <button class="btn btn-outline-primary" @onclick="RefreshAsync" disabled="@_loading">
@@ -27,17 +27,76 @@
     <div class="alert alert-danger">@_error</div>
 }
 
+<!-- Overview Cards -->
+@if (_overview is not null)
+{
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+        <div style="background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-md); padding: 1rem;">
+            <div style="color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em;">Total Messages</div>
+            <div style="font-size: 1.5rem; font-weight: 700; font-family: var(--font-mono); color: var(--accent);">@_overview.QueueTotals?.Messages</div>
+        </div>
+        <div style="background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-md); padding: 1rem;">
+            <div style="color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em;">Publish Rate</div>
+            <div style="font-size: 1.5rem; font-weight: 700; font-family: var(--font-mono); color: var(--info);">@($"{_overview.MessageStats?.PublishDetails?.Rate ?? 0:F1}")<span style="font-size: 0.8rem; color: var(--text-secondary);">/s</span></div>
+        </div>
+        <div style="background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-md); padding: 1rem;">
+            <div style="color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em;">Deliver Rate</div>
+            <div style="font-size: 1.5rem; font-weight: 700; font-family: var(--font-mono); color: var(--success);">@($"{_overview.MessageStats?.DeliverDetails?.Rate ?? 0:F1}")<span style="font-size: 0.8rem; color: var(--text-secondary);">/s</span></div>
+        </div>
+        <div style="background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-md); padding: 1rem;">
+            <div style="color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em;">Consumers</div>
+            <div style="font-size: 1.5rem; font-weight: 700; font-family: var(--font-mono); color: var(--text-primary);">@_overview.QueueTotals?.Consumers</div>
+        </div>
+    </div>
+}
+
+<!-- Exchanges -->
+@if (_exchanges.Any())
+{
+    <h4 style="font-family: var(--font-mono); font-size: 0.9rem;">Exchanges</h4>
+    <table class="table table-sm table-hover mb-4">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Messages In</th>
+                <th>Messages Out</th>
+                <th>Rate In</th>
+                <th>Rate Out</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var ex in _exchanges)
+            {
+                <tr>
+                    <td><code>@ex.Name</code></td>
+                    <td><span class="badge bg-info text-dark">@ex.Type</span></td>
+                    <td>@ex.MessageStats?.Publish</td>
+                    <td>@ex.MessageStats?.Deliver</td>
+                    <td>@($"{ex.MessageStats?.PublishDetails?.Rate ?? 0:F1}")</td>
+                    <td>@($"{ex.MessageStats?.DeliverDetails?.Rate ?? 0:F1}")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+<!-- Queues -->
 @if (_queues.Any())
 {
+    <h4 style="font-family: var(--font-mono); font-size: 0.9rem;">Queues</h4>
     <table class="table table-sm table-hover">
         <thead>
             <tr>
                 <th>Queue</th>
+                <th>State</th>
                 <th>Messages</th>
                 <th>Ready</th>
                 <th>Unacked</th>
                 <th>Consumers</th>
-                <th>Rate (msg/s)</th>
+                <th>Total Published</th>
+                <th>Total Delivered</th>
+                <th>Publish Rate</th>
             </tr>
         </thead>
         <tbody>
@@ -51,16 +110,21 @@
                             <span class="badge bg-primary ms-1">inbox</span>
                         }
                     </td>
+                    <td>
+                        <span class="badge @(q.State == "running" ? "bg-success" : "bg-warning text-dark")">@q.State</span>
+                    </td>
                     <td><strong>@q.Messages</strong></td>
                     <td>@q.MessagesReady</td>
                     <td>@q.MessagesUnacknowledged</td>
                     <td>@q.Consumers</td>
-                    <td>@q.MessageStats?.PublishDetails?.Rate.ToString("F1")</td>
+                    <td>@(q.MessageStats?.Publish ?? 0)</td>
+                    <td>@(q.MessageStats?.Deliver ?? 0)</td>
+                    <td>@($"{q.MessageStats?.PublishDetails?.Rate ?? 0:F1}")</td>
                 </tr>
-                @if (q.Messages > 0 && q.Name == "order-created-inbox")
+                @if (q.Messages > 0)
                 {
                     <tr>
-                        <td colspan="6" class="ps-4">
+                        <td colspan="9" class="ps-4">
                             <button class="btn btn-sm btn-outline-secondary" @onclick="() => LoadMessagesAsync(q.Name)">
                                 Show @q.Messages message(s)
                             </button>
@@ -107,15 +171,25 @@ else if (!_loading)
 }
 
 @code {
-    private record QueueInfo(
-        string Name, string Vhost, int Messages, int MessagesReady,
-        int MessagesUnacknowledged, int Consumers, MessageStats? MessageStats);
+    // --- Data Records ---
+    private record QueueTotals(int Messages, int Consumers);
+    private record RateDetails(double Rate);
+    private record OverviewMessageStats(RateDetails PublishDetails, RateDetails DeliverDetails);
+    private record OverviewData(QueueTotals? QueueTotals, OverviewMessageStats? MessageStats);
 
-    private record MessageStats(PublishDetails PublishDetails);
-    private record PublishDetails(double Rate);
+    private record ExchangeMessageStats(int Publish, int Deliver, RateDetails PublishDetails, RateDetails DeliverDetails);
+    private record ExchangeInfo(string Name, string Type, ExchangeMessageStats? MessageStats);
+
+    private record QueueMessageStats(int Publish, int Deliver, RateDetails PublishDetails, RateDetails DeliverDetails);
+    private record QueueInfo(
+        string Name, string State, int Messages, int MessagesReady,
+        int MessagesUnacknowledged, int Consumers, QueueMessageStats? MessageStats);
 
     private record QueueMessage(string Payload, string Exchange, string RoutingKey, string Properties);
 
+    // --- State ---
+    private OverviewData? _overview;
+    private List<ExchangeInfo> _exchanges = [];
     private List<QueueInfo> _queues = [];
     private List<QueueMessage> _queueMessages = [];
     private string? _selectedQueue;
@@ -126,20 +200,34 @@ else if (!_loading)
     private PeriodicTimer? _timer;
     private readonly JsonSerializerOptions _jsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
+    private readonly HttpClient _mqClient = new(new HttpClientHandler
+    {
+        Credentials = new System.Net.NetworkCredential("guest", "guest")
+    })
+    { BaseAddress = new Uri("http://127.0.0.1:15673") };
+
     protected override async Task OnInitializedAsync()
     {
         await RefreshAsync();
-        _ = RunAutoRefreshLoop();
+        _ = RunAutoRefreshLoop().ContinueWith(t =>
+        {
+            if (t.Exception is not null)
+                Console.Error.WriteLine(t.Exception.Flatten().Message);
+        }, TaskContinuationOptions.OnlyOnFaulted);
     }
 
     private async Task RunAutoRefreshLoop()
     {
         _timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
-        while (await _timer.WaitForNextTickAsync(_cts.Token))
+        try
         {
-            if (_autoRefresh)
-                await RefreshAsync();
+            while (await _timer.WaitForNextTickAsync(_cts.Token))
+            {
+                if (_autoRefresh)
+                    await RefreshAsync();
+            }
         }
+        catch (OperationCanceledException) { }
     }
 
     private async Task RefreshAsync()
@@ -149,29 +237,74 @@ else if (!_loading)
 
         try
         {
-            using var handler = new HttpClientHandler { Credentials = new System.Net.NetworkCredential("guest", "guest") };
-            using var client = new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:15673") };
+            // 并发请求 overview + exchanges + queues
+            var overviewTask = _mqClient.GetStringAsync("/api/overview", _cts.Token);
+            var exchangesTask = _mqClient.GetStringAsync("/api/exchanges/%2F", _cts.Token);
+            var queuesTask = _mqClient.GetStringAsync("/api/queues/%2F", _cts.Token);
 
-            var json = await client.GetStringAsync("/api/queues/%2F", _cts.Token);
-            var raw = JsonSerializer.Deserialize<List<JsonElement>>(json, _jsonOptions);
+            await Task.WhenAll(overviewTask, exchangesTask, queuesTask);
 
-            _queues = raw?.Select(q => new QueueInfo(
+            // Overview
+            var overviewDoc = JsonDocument.Parse(overviewTask.Result);
+            var ov = overviewDoc.RootElement;
+            _overview = new OverviewData(
+                QueueTotals: ov.TryGetProperty("queue_totals", out var qt)
+                    ? new QueueTotals(
+                        qt.TryGetProperty("messages", out var m) ? m.GetInt32() : 0,
+                        qt.TryGetProperty("consumers", out var c) ? c.GetInt32() : 0)
+                    : null,
+                MessageStats: ov.TryGetProperty("message_stats", out var ms)
+                    ? new OverviewMessageStats(
+                        PublishDetails: ms.TryGetProperty("publish_details", out var pd)
+                            ? new RateDetails(pd.GetProperty("rate").GetDouble()) : new RateDetails(0),
+                        DeliverDetails: ms.TryGetProperty("deliver_details", out var dd)
+                            ? new RateDetails(dd.GetProperty("rate").GetDouble()) : new RateDetails(0))
+                    : null
+            );
+
+            // Exchanges (过滤掉默认 exchange)
+            var exRaw = JsonSerializer.Deserialize<List<JsonElement>>(exchangesTask.Result, _jsonOptions);
+            _exchanges = exRaw?.Where(e =>
+            {
+                var name = e.GetProperty("name").GetString() ?? "";
+                return !string.IsNullOrEmpty(name) && name.StartsWith("InboxDemo", StringComparison.Ordinal);
+            }).Select(e => new ExchangeInfo(
+                e.GetProperty("name").GetString() ?? "",
+                e.GetProperty("type").GetString() ?? "",
+                e.TryGetProperty("message_stats", out var stats)
+                    ? new ExchangeMessageStats(
+                        Publish: stats.TryGetProperty("publish", out var p) ? p.GetInt32() : 0,
+                        Deliver: stats.TryGetProperty("deliver", out var d) ? d.GetInt32() : 0,
+                        PublishDetails: stats.TryGetProperty("publish_details", out var pd2)
+                            ? new RateDetails(pd2.GetProperty("rate").GetDouble()) : new RateDetails(0),
+                        DeliverDetails: stats.TryGetProperty("deliver_details", out var dd2)
+                            ? new RateDetails(dd2.GetProperty("rate").GetDouble()) : new RateDetails(0))
+                    : null
+            )).ToList() ?? [];
+
+            // Queues
+            var qRaw = JsonSerializer.Deserialize<List<JsonElement>>(queuesTask.Result, _jsonOptions);
+            _queues = qRaw?.Select(q => new QueueInfo(
                 q.GetProperty("name").GetString() ?? "",
-                q.GetProperty("vhost").GetString() ?? "",
+                q.TryGetProperty("state", out var st) ? st.GetString() ?? "unknown" : "unknown",
                 q.GetProperty("messages").GetInt32(),
                 q.GetProperty("messages_ready").GetInt32(),
                 q.GetProperty("messages_unacknowledged").GetInt32(),
                 q.GetProperty("consumers").GetInt32(),
                 q.TryGetProperty("message_stats", out var stats)
-                    ? new MessageStats(new PublishDetails(
-                        stats.TryGetProperty("publish_details", out var pd)
-                            ? pd.GetProperty("rate").GetDouble() : 0))
+                    ? new QueueMessageStats(
+                        Publish: stats.TryGetProperty("publish", out var p) ? p.GetInt32() : 0,
+                        Deliver: stats.TryGetProperty("deliver", out var d) ? d.GetInt32() : 0,
+                        PublishDetails: stats.TryGetProperty("publish_details", out var pd3)
+                            ? new RateDetails(pd3.GetProperty("rate").GetDouble()) : new RateDetails(0),
+                        DeliverDetails: stats.TryGetProperty("deliver_details", out var dd3)
+                            ? new RateDetails(dd3.GetProperty("rate").GetDouble()) : new RateDetails(0))
                     : null
             )).ToList() ?? [];
         }
         catch (Exception ex)
         {
-            _error = $"Failed to load queues: {ex.Message}";
+            _error = $"Failed to load: {ex.Message}";
         }
         finally
         {
@@ -186,12 +319,9 @@ else if (!_loading)
 
         try
         {
-            using var handler = new HttpClientHandler { Credentials = new System.Net.NetworkCredential("guest", "guest") };
-            using var client = new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:15673") };
-
             var body = JsonSerializer.Serialize(new { count = 10, requeue = true, encoding = "auto", truncate = 50000 });
             var content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
-            var response = await client.PostAsync($"/api/queues/%2F/{Uri.EscapeDataString(queue)}/get", content, _cts.Token);
+            var response = await _mqClient.PostAsync($"/api/queues/%2F/{Uri.EscapeDataString(queue)}/get", content, _cts.Token);
 
             var json = await response.Content.ReadAsStringAsync(_cts.Token);
             var items = JsonSerializer.Deserialize<List<JsonElement>>(json, _jsonOptions);
@@ -224,10 +354,11 @@ else if (!_loading)
         }
     }
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        _cts.Cancel();
+        await _cts.CancelAsync();
         _timer?.Dispose();
+        _mqClient.Dispose();
         _cts.Dispose();
     }
 }

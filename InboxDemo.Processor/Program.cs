@@ -5,7 +5,7 @@ var builder = Host.CreateApplicationBuilder(args);
 
 // 注册数据库连接
 var connectionString = builder.Configuration.GetConnectionString("PostgreSQL")
-    ?? "Host=127.0.0.1;Port=5433;Database=inbox_demo;Username=postgres;Password=postgres";
+    ?? throw new InvalidOperationException("ConnectionStrings:PostgreSQL is not configured.");
 
 builder.Services.AddSingleton(new InboxDatabase(connectionString));
 

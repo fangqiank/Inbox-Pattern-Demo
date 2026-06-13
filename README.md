@@ -1,4 +1,4 @@
-# Outbox Pattern Demo
+# Outbox & Inbox Pattern Demo
 
 Transactional Outbox + Inbox Pattern 演示项目 / A demo of the Transactional Outbox + Inbox Pattern built on .NET 10.
 

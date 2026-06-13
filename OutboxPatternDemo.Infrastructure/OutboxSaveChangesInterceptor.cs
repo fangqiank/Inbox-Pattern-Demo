@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using OutboxPatternDemo.Domain;
 using System.Text.Json;
 
@@ -21,13 +21,13 @@ namespace OutboxPatternDemo.Infrastructure
             if (dbContext is null)
                 return result;
 
-            var domainEvent = dbContext.ChangeTracker
+            var domainEvents = dbContext.ChangeTracker
                 .Entries<Entity>()
                 .Where(e => e.Entity.DomainEvents.Any())
                 .SelectMany(x => x.Entity.DomainEvents)
                 .ToList();
 
-            var outboxMessages = domainEvent.Select(ToOutboxMessage).ToList();
+            var outboxMessages = domainEvents.Select(ToOutboxMessage).ToList();
 
             if(outboxMessages.Count > 0)
                 dbContext.Set<OutboxMessage>().AddRange(outboxMessages);

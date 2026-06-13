@@ -1,7 +1,8 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using OutboxPatternDemo.Domain;
 using OutboxPatternDemo.Infrastructure;
-using OutboxPatternDemo.Infrastructure.EventHandlers;
+using OutboxPatternDemo.Worker.EventHandlers;
 using System.Data;
 using System.Text.Json;
 
@@ -9,7 +10,8 @@ namespace OutboxPatternDemo.Worker
 {
     public class InboxProcessor(
         IServiceScopeFactory scopeFactory,
-        ILogger<InboxProcessor> logger
+        ILogger<InboxProcessor> logger,
+        IConfiguration configuration
         ) : BackgroundService
     {
         private static readonly JsonSerializerOptions jsonSerializerOptions = new()
@@ -17,9 +19,19 @@ namespace OutboxPatternDemo.Worker
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         };
 
+        private static readonly string FetchOutboxSql = """
+            SELECT * FROM outbox_messages
+            WHERE processed_on_utc IS NULL
+            AND retry_count < 3
+            ORDER BY created_on_utc
+            LIMIT 10
+            FOR UPDATE SKIP LOCKED
+            """;
+
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            logger.LogInformation("📥 Inbox Processor started");
+            var pollInterval = configuration.GetValue("PollingIntervalSeconds", 5);
+            logger.LogInformation("Inbox Processor started, polling every {Interval}s", pollInterval);
 
             while (!stoppingToken.IsCancellationRequested)
             {
@@ -29,10 +41,10 @@ namespace OutboxPatternDemo.Worker
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex, "❌ Error processing outbox messages in inbox processor");
+                    logger.LogError(ex, "Error processing outbox messages in inbox processor");
                 }
 
-                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+                await Task.Delay(TimeSpan.FromSeconds(pollInterval), stoppingToken);
             }
         }
 
@@ -41,21 +53,14 @@ namespace OutboxPatternDemo.Worker
             using var scope = scopeFactory.CreateScope();
             var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-            // 使用事务 + 行锁，防止并发处理同一消息
+            // Outer transaction holds FOR UPDATE row locks across all per-message savepoints
             using var transaction = await dbContext.Database.BeginTransactionAsync(
                 IsolationLevel.ReadCommitted, stoppingToken);
 
             try
             {
-                // 1. 获取未处理的 Outbox 消息（跳过已锁定的行）
                 var messages = await dbContext.OutboxMessages
-                    .FromSqlRaw(@"
-                    SELECT * FROM outbox_messages 
-                    WHERE processed_on_utc IS NULL 
-                    AND retry_count < 3  -- 最多重试3次
-                    ORDER BY created_on_utc 
-                    LIMIT 10 
-                    FOR UPDATE SKIP LOCKED")
+                    .FromSqlRaw(FetchOutboxSql) // Safe: no user-supplied values in the SQL
                     .ToListAsync(stoppingToken);
 
                 if (messages.Count == 0)
@@ -64,167 +69,167 @@ namespace OutboxPatternDemo.Worker
                     return;
                 }
 
-                logger.LogInformation("📨 Processing {Count} outbox messages", messages.Count);
+                logger.LogInformation("Processing {Count} outbox messages", messages.Count);
 
                 foreach (var message in messages)
                 {
-                    await ProcessMessageWithInboxAsync(message, dbContext, scope, stoppingToken);
+                    await ProcessMessageInSavepointAsync(message, dbContext, scope, transaction, stoppingToken);
                 }
 
                 await dbContext.SaveChangesAsync(stoppingToken);
                 await transaction.CommitAsync(stoppingToken);
 
-                logger.LogInformation("✅ Successfully processed batch of {Count} messages", messages.Count);
+                logger.LogInformation("Successfully processed batch of {Count} messages", messages.Count);
             }
             catch (Exception ex)
             {
                 await transaction.RollbackAsync(stoppingToken);
-                logger.LogError(ex, "❌ Failed to process message batch");
+                logger.LogError(ex, "Failed to process message batch");
                 throw;
             }
         }
 
-        private async Task ProcessMessageWithInboxAsync(
-            OutboxMessage message, 
-            AppDbContext dbContext, 
-            IServiceScope scope, 
+        private async Task ProcessMessageInSavepointAsync(
+            OutboxMessage message,
+            AppDbContext dbContext,
+            IServiceScope scope,
+            IDbContextTransaction transaction,
             CancellationToken stoppingToken)
         {
+            var dbTransaction = transaction.GetDbTransaction();
+            var savepoint = $"msg_{message.Id:N}";
+            await dbTransaction.SaveAsync(savepoint, stoppingToken);
+
             try
             {
-                // 2. Inbox 幂等性检查 - 核心步骤
-                var existingInbox = await dbContext.InboxMessages
-                    .FirstOrDefaultAsync(i => i.MessageId == message.MessageId, stoppingToken);
-
-                if (existingInbox is not null)
-                {
-                    logger.LogWarning(
-                        "🔄 Duplicate message detected! MessageId: {MessageId}, Already processed at: {ProcessedAt}",
-                        message.MessageId, existingInbox.ProcessedOnUtc);
-
-                    // 标记 Outbox 消息为已处理，避免重复拉取
-                    message.ProcessedOnUtc = DateTime.UtcNow;
-                    message.Error = $"Duplicate - Already processed at {existingInbox.ProcessedOnUtc}";
-                    return;
-                }
-
-                // 3. 获取事件的所有处理器
-                var handlers = GetHandlersForEvent(message.Name, scope);
-
-                if (handlers.Count == 0)
-                {
-                    logger.LogWarning("⚠️ No handlers found for event: {EventName}", message.Name);
-                    message.ProcessedOnUtc = DateTime.UtcNow;
-                    message.Error = "No handlers registered";
-                    return;
-                }
-
-                // 4. 反序列化事件 - 用 Name 列解析具体类型，无需多态 $type
-                var eventType = message.Name switch
-                {
-                    nameof(UserFollowedEvent) => typeof(UserFollowedEvent),
-                    _ => null
-                };
-                if (eventType is null)
-                {
-                    throw new InvalidOperationException($"Unknown event type: {message.Name}");
-                }
-
-                var domainEvent = JsonSerializer.Deserialize(message.Content, eventType, jsonSerializerOptions);
-                if (domainEvent is null)
-                {
-                    throw new InvalidOperationException($"Failed to deserialize event: {message.Name}");
-                }
-
-                // 5. 执行所有处理器
-                var handlerTasks = handlers.Select(handler =>
-                    ExecuteHandlerWithErrorHandling(handler, domainEvent, message, dbContext, stoppingToken));
-
-                await Task.WhenAll(handlerTasks);
-
-                // 6. 标记 Outbox 消息为已处理
-                message.ProcessedOnUtc = DateTime.UtcNow;
+                await ProcessMessageWithInboxAsync(message, dbContext, scope, stoppingToken);
+                await dbContext.SaveChangesAsync(stoppingToken);
             }
             catch (Exception ex)
             {
-                // 处理失败，记录错误并增加重试计数
+                await dbTransaction.RollbackAsync(savepoint, stoppingToken);
+
+                // Discard any InboxMessage entities added during this message's handler execution.
+                // They were not persisted (rolled back to savepoint) and must be removed from
+                // the ChangeTracker so the next SaveChangesAsync only touches retry bookkeeping.
+                var addedEntries = dbContext.ChangeTracker.Entries<InboxMessage>()
+                    .Where(e => e.State == EntityState.Added).ToList();
+                foreach (var entry in addedEntries)
+                    entry.State = EntityState.Detached;
+
+                // RetryCount and Error are saved outside the handler savepoint.
+                // If retries are exhausted the message is permanently marked processed.
                 message.RetryCount++;
                 message.Error = ex.ToString();
 
                 if (message.RetryCount >= 3)
                 {
-                    // 超过最大重试次数，标记为已处理（但记录错误）
                     message.ProcessedOnUtc = DateTime.UtcNow;
                     logger.LogError(ex,
-                        "❌ Message {MessageId} failed after {RetryCount} retries, marking as processed with error",
+                        "Message {MessageId} failed after {RetryCount} retries, marking as processed with error",
                         message.Id, message.RetryCount);
                 }
                 else
                 {
                     logger.LogWarning(ex,
-                        "⚠️ Message {MessageId} failed (attempt {RetryCount}/3), will retry",
+                        "Message {MessageId} failed (attempt {RetryCount}/3), will retry",
                         message.Id, message.RetryCount);
                 }
+
+                await dbContext.SaveChangesAsync(stoppingToken);
             }
         }
 
-        private List<object> GetHandlersForEvent(string name, IServiceScope scope)
+        private async Task ProcessMessageWithInboxAsync(
+            OutboxMessage message,
+            AppDbContext dbContext,
+            IServiceScope scope,
+            CancellationToken stoppingToken)
+        {
+            // Resolve handlers for the event type
+            var handlers = GetHandlersForEvent(message.Name, scope);
+
+            if (handlers.Count == 0)
+            {
+                logger.LogWarning("No handlers found for event: {EventName}", message.Name);
+                message.ProcessedOnUtc = DateTime.UtcNow;
+                message.Error = "No handlers registered";
+                return;
+            }
+
+            // Deserialize the domain event by Name column
+            var eventType = message.Name switch
+            {
+                nameof(UserFollowedEvent) => typeof(UserFollowedEvent),
+                _ => null
+            };
+            if (eventType is null)
+            {
+                throw new InvalidOperationException($"Unknown event type: {message.Name}");
+            }
+
+            var domainEvent = JsonSerializer.Deserialize(message.Content, eventType, jsonSerializerOptions);
+            if (domainEvent is null)
+            {
+                throw new InvalidOperationException($"Failed to deserialize event: {message.Name}");
+            }
+
+            // Execute handlers serially.
+            // If any handler fails the exception propagates up to the savepoint catch,
+            // which rolls back ALL handler changes for this message (including InboxMessage
+            // records from handlers that already succeeded).  RetryCount is then persisted
+            // outside the savepoint scope so it survives the rollback.
+            foreach (var handler in handlers)
+            {
+                await ExecuteHandlerWithInboxWriteAsync(handler, domainEvent, message, dbContext, stoppingToken);
+            }
+
+            message.ProcessedOnUtc = DateTime.UtcNow;
+        }
+
+        private static List<IEventHandler> GetHandlersForEvent(string name, IServiceScope scope)
         {
             return name switch
             {
-                nameof(UserFollowedEvent) => new List<object>
-                {
+                nameof(UserFollowedEvent) =>
+                [
                     scope.ServiceProvider.GetRequiredService<SendNotificationOnUserFollowedHandler>(),
                     scope.ServiceProvider.GetRequiredService<UpdateFollowStatsHandler>(),
                     scope.ServiceProvider.GetRequiredService<AddToTimelineHandler>()
-                },
-                _ => new List<object>()
+                ],
+                _ => []
             };
         }
 
-        private async Task ExecuteHandlerWithErrorHandling(
-            object handler, 
-            object domainEvent, 
-            OutboxMessage message, 
-            AppDbContext dbContext, 
+        private async Task ExecuteHandlerWithInboxWriteAsync(
+            IEventHandler handler,
+            object domainEvent,
+            OutboxMessage message,
+            AppDbContext dbContext,
             CancellationToken stoppingToken)
         {
-            var handlerName = (string)((dynamic)handler).HandlerName;
+            logger.LogInformation(
+                "Executing handler {HandlerName} for event {EventId}",
+                handler.HandlerName, message.MessageId);
 
-            try
+            await handler.HandleAsync(domainEvent, stoppingToken);
+
+            var inboxMessage = new InboxMessage
             {
-                logger.LogInformation(
-                    "🔧 Executing handler {HandlerName} for event {EventId}",
-                    handlerName, message.MessageId);
+                Id = Guid.NewGuid(),
+                MessageId = message.MessageId,
+                Name = message.Name,
+                Content = message.Content,
+                OccurredOnUtc = message.CreatedOnUtc,
+                ProcessedOnUtc = DateTime.UtcNow,
+                HandlerName = handler.HandlerName
+            };
 
-                // 执行处理器
-                await ((dynamic)handler).HandleAsync((dynamic)domainEvent, stoppingToken);
+            dbContext.InboxMessages.Add(inboxMessage);
 
-                // 记录到 Inbox - 每个处理器一条记录
-                var inboxMessage = new InboxMessage
-                {
-                    Id = Guid.NewGuid(),
-                    MessageId = message.MessageId,
-                    Name = message.Name,
-                    Content = message.Content,
-                    OccurredOnUtc = message.CreatedOnUtc,
-                    ProcessedOnUtc = DateTime.UtcNow,
-                    HandlerName = handlerName
-                };
-
-                dbContext.InboxMessages.Add(inboxMessage);
-
-                logger.LogInformation(
-                    "✅ Handler {HandlerName} completed for event {EventId}",
-                    handlerName, message.MessageId);
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex,
-                    "❌ Handler {HandlerName} failed for event {EventId}",
-                    handlerName, message.MessageId);
-                throw; // 重新抛出，让外层处理重试逻辑
-            }
+            logger.LogInformation(
+                "Handler {HandlerName} completed for event {EventId}",
+                handler.HandlerName, message.MessageId);
         }
     }
 }

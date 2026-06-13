@@ -16,8 +16,4 @@
     <ProjectReference Include="..\OutboxPatternDemo.Infrastructure\OutboxPatternDemo.Infrastructure.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Folder Include="Controllers\" />
-  </ItemGroup>
-
 </Project>

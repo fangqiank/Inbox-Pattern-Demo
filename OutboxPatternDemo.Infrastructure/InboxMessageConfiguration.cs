@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace OutboxPatternDemo.Infrastructure
@@ -17,7 +17,6 @@ namespace OutboxPatternDemo.Infrastructure
                    .IsRequired()
                    .HasMaxLength(256);
             builder.Property(x => x.Content).HasColumnName("content")
-                   .IsRequired()
                    .HasColumnType("jsonb");
             builder.Property(x => x.OccurredOnUtc).HasColumnName("occurred_on_utc")
                    .IsRequired();

@@ -1,7 +1,8 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 using OutboxPatternDemo.Domain;
+using OutboxPatternDemo.Infrastructure;
 
-namespace OutboxPatternDemo.Infrastructure.EventHandlers
+namespace OutboxPatternDemo.Worker.EventHandlers
 {
     public class UpdateFollowStatsHandler(ILogger<UpdateFollowStatsHandler> logger) : IEventHandler<UserFollowedEvent>
     {
@@ -19,5 +20,8 @@ namespace OutboxPatternDemo.Infrastructure.EventHandlers
                 "[STATS] Statistics updated successfully for event {EventId}",
                 @event.Id);
         }
+
+        async Task IEventHandler.HandleAsync(object domainEvent, CancellationToken cancellationToken)
+            => await HandleAsync((UserFollowedEvent)domainEvent, cancellationToken);
     }
 }

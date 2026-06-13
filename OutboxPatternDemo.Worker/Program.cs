@@ -1,6 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using OutboxPatternDemo.Infrastructure;
-using OutboxPatternDemo.Infrastructure.EventHandlers;
+using OutboxPatternDemo.Worker.EventHandlers;
 using OutboxPatternDemo.Worker;
 
 var builder = Host.CreateApplicationBuilder(args);

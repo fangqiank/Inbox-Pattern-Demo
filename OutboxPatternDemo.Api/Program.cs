@@ -38,6 +38,9 @@ app.UseStaticFiles();
 
 app.MapPost("/api/users", async (CreateUserRequest request, AppDbContext dbContext) =>
 {
+    if (string.IsNullOrWhiteSpace(request.Username) || request.Username.Length > 100)
+        return Results.BadRequest(new { error = "Username is required and must be 100 characters or fewer" });
+
     var user = new OutboxPatternDemo.Domain.User(Guid.NewGuid(), request.Username);
     dbContext.Users.Add(user);
     await dbContext.SaveChangesAsync();
@@ -99,13 +102,13 @@ app.MapGet("/api/inbox/messages", async (AppDbContext dbContext) =>
         .Take(20)
         .Select(m => new
         {
-        m.Id,
-        m.MessageId,
-        m.Name,
-        m.HandlerName,
-        m.OccurredOnUtc,
-        m.ProcessedOnUtc,
-        m.Error
+            m.Id,
+            m.MessageId,
+            m.Name,
+            m.HandlerName,
+            m.OccurredOnUtc,
+            m.ProcessedOnUtc,
+            m.Error
         })
         .ToListAsync();
 
@@ -118,11 +121,11 @@ app.MapGet("/api/inbox/messages/{messageId}", async (Guid messageId, AppDbContex
         .Where(m => m.MessageId == messageId)
         .Select(m => new
         {
-        m.Id,
-        m.HandlerName,
-        m.ProcessedOnUtc,
-        ProcessingTime = m.ProcessedOnUtc.HasValue ?
-                    (m.ProcessedOnUtc.Value - m.OccurredOnUtc).TotalMilliseconds : (double?)null
+            m.Id,
+            m.HandlerName,
+            m.ProcessedOnUtc,
+            ProcessingTime = m.ProcessedOnUtc.HasValue ?
+                        (m.ProcessedOnUtc.Value - m.OccurredOnUtc).TotalMilliseconds : (double?)null
         })
         .ToListAsync();
 

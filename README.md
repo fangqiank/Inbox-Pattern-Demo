@@ -21,9 +21,9 @@ Transactional Outbox + Inbox Pattern 演示项目 / A demo of the Transactional 
 | Module | Project | Responsibility |
 |--------|---------|---------------|
 | Domain | `OutboxPatternDemo.Domain` | Entities, domain events, business rules |
-| Infrastructure | `OutboxPatternDemo.Infrastructure` | DbContext, outbox interceptor, EF config, event handlers |
+| Infrastructure | `OutboxPatternDemo.Infrastructure` | DbContext, outbox interceptor, inbox/outbox entities, EF config, IEventHandler interface |
 | API | `OutboxPatternDemo.Api` | REST endpoints, static frontend, DB bootstrap |
-| Worker | `OutboxPatternDemo.Worker` | InboxProcessor background service, event dispatching |
+| Worker | `OutboxPatternDemo.Worker` | InboxProcessor background service, event handlers |
 
 ## Architecture
 
@@ -31,10 +31,10 @@ Transactional Outbox + Inbox Pattern 演示项目 / A demo of the Transactional 
 Domain (entities, domain events)
   ^
   |
-Infrastructure (DbContext, interceptor, handlers, EF config)
+Infrastructure (DbContext, interceptor, entities, EF config, IEventHandler interface)
   ^           ^
   |           |
-Api          Worker
+Api          Worker (event handlers, InboxProcessor)
 ```
 
 ### Data Flow
@@ -43,7 +43,7 @@ Api          Worker
 2. **Entity** raises domain event (`User.Follow()` adds `UserFollowedEvent`)
 3. **OutboxSaveChangesInterceptor** captures events, serializes to JSON, inserts `OutboxMessage` rows **in the same database transaction** as the entity changes (atomic write)
 4. **InboxProcessor** (Worker `BackgroundService`) polls `outbox_messages` every 5s using PostgreSQL `FOR UPDATE SKIP LOCKED` for safe concurrent processing
-5. Deserializes event by `Name` column, resolves handlers, runs all handlers **in parallel** via `Task.WhenAll`
+5. Each message is processed in its **own savepoint** within the outer lock transaction: handlers execute serially; on failure the savepoint rolls back, orphaned `InboxMessage` entities are cleaned from the ChangeTracker, and `RetryCount` is persisted outside the savepoint scope
 6. Each handler creates its own `InboxMessage` record with a unique index on `(MessageId, HandlerName)` for per-handler idempotency
 
 ### Event Handlers
@@ -123,5 +123,9 @@ Open `http://localhost:5017` in a browser. The UI provides:
 - **No external message broker** -- PostgreSQL tables serve as both outbox and inbox queues
 - **Atomic outbox writes** via EF Core `SaveChangesInterceptor` (same transaction as business data)
 - **Concurrent-safe polling** using PostgreSQL `FOR UPDATE SKIP LOCKED`
+- **Savepoint-based per-message transactions** -- outer transaction holds row locks; per-message savepoints isolate handler failures so `RetryCount` survives rollback without leaking orphaned `InboxMessage` records
 - **Per-handler idempotency** via unique index on `(MessageId, HandlerName)`
+- **Strongly typed handlers** via `IEventHandler` / `IEventHandler<TEvent>` interfaces (no `dynamic` dispatch)
 - **Retry with max 3 attempts** for failed messages
+- **Configurable polling interval** via `PollingIntervalSeconds` in Worker `appsettings.json`
+- **EF Core `IEntityTypeConfiguration<T>`** for all entity mappings (`UserConfiguration`, `OutboxMessageConfiguration`, `InboxMessageConfiguration`)

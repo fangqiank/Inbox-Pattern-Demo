@@ -1,11 +1,13 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 using OutboxPatternDemo.Domain;
+using OutboxPatternDemo.Infrastructure;
 
-namespace OutboxPatternDemo.Infrastructure.EventHandlers
+namespace OutboxPatternDemo.Worker.EventHandlers
 {
     public class SendNotificationOnUserFollowedHandler(ILogger<SendNotificationOnUserFollowedHandler> logger) : IEventHandler<UserFollowedEvent>
     {
         public string HandlerName => nameof(SendNotificationOnUserFollowedHandler);
+
         public async Task HandleAsync(UserFollowedEvent @event, CancellationToken cancellationToken)
         {
             logger.LogInformation(
@@ -18,5 +20,8 @@ namespace OutboxPatternDemo.Infrastructure.EventHandlers
                 "[NOTIFICATION] Notification sent successfully for follow event {EventId}",
                 @event.Id);
         }
+
+        async Task IEventHandler.HandleAsync(object domainEvent, CancellationToken cancellationToken)
+            => await HandleAsync((UserFollowedEvent)domainEvent, cancellationToken);
     }
 }

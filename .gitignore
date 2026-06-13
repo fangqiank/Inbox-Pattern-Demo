@@ -1,0 +1,27 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.log
+
+## IDE
+.vs/
+.vscode/
+.idea/
+*.swp
+
+## Node
+node_modules/
+
+## OS
+Thumbs.db
+.DS_Store
+
+## Docker
+postgres_data/
+
+## Claude
+CLAUDE.md
+.claude/

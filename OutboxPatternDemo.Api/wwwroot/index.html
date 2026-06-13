@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Outbox Pattern Demo</title>
+    <link rel="stylesheet" href="/css/style.css?v=4">
+</head>
+<body>
+    <header>
+        <h1>Outbox Pattern Demo</h1>
+        <p>Transactional Outbox + Inbox Pattern with .NET &amp; PostgreSQL</p>
+    </header>
+
+    <main>
+        <!-- Users -->
+        <section class="card">
+            <h2>Users</h2>
+            <form id="create-user-form">
+                <input type="text" id="username-input" placeholder="Username" required autocomplete="off">
+                <button type="submit">Create</button>
+            </form>
+            <div id="create-user-msg" class="msg"></div>
+            <div id="user-list" class="list empty" style="margin-top:.75rem">Loading...</div>
+            <div class="follow-bar">
+                <select id="follower-select"><option value="">Follower</option></select>
+                <span>follows</span>
+                <select id="followed-select"><option value="">Followed</option></select>
+                <button id="follow-btn">Follow</button>
+            </div>
+            <div id="follow-msg" class="msg"></div>
+        </section>
+
+        <!-- Outbox -->
+        <section class="card">
+            <h2>Outbox <button id="refresh-outbox" class="icon-btn" title="Refresh">&#x21bb;</button></h2>
+            <div id="outbox-list" class="list empty">Loading...</div>
+        </section>
+
+        <!-- Inbox -->
+        <section class="card">
+            <h2>Inbox
+                <button id="refresh-inbox" class="icon-btn" title="Refresh">&#x21bb;</button>
+            </h2>
+            <div id="inbox-list" class="list empty">Loading...</div>
+        </section>
+
+        <!-- Stats -->
+        <section class="card">
+            <h2>Processing Stats <button id="refresh-stats" class="icon-btn" title="Refresh">&#x21bb;</button></h2>
+            <div id="stats-container">Loading...</div>
+        </section>
+
+        <!-- Message Detail Modal -->
+        <div id="modal-overlay" class="modal-overlay hidden">
+            <div class="modal">
+                <div class="modal-header">
+                    <h3 id="modal-title">Message Handlers</h3>
+                    <button id="modal-close" class="icon-btn">&times;</button>
+                </div>
+                <div id="modal-body" class="modal-body"></div>
+            </div>
+        </div>
+    </main>
+
+    <script src="/js/app.js?v=4"></script>
+</body>
+</html>

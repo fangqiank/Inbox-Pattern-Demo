@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="docker-compose.yml" />
+  </Folder>
+  <Project Path="OutboxPatternDemo.Api/OutboxPatternDemo.Api.csproj" />
+  <Project Path="OutboxPatternDemo.Domain/OutboxPatternDemo.Domain.csproj" />
+  <Project Path="OutboxPatternDemo.Infrastructure/OutboxPatternDemo.Infrastructure.csproj" />
+  <Project Path="OutboxPatternDemo.Worker/OutboxPatternDemo.Worker.csproj" />
+</Solution>
